@@ -1,0 +1,100 @@
+name: VPS Shell
+
+on:
+  workflow_dispatch:
+    inputs:
+      tunnel_duration:
+        description: 'Keep alive duration in seconds (max 21600 = 6h)'
+        required: false
+        default: '21600'
+
+jobs:
+  vps:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+
+    steps:
+      - name: System Info
+        run: |
+          echo "=============================="
+          echo "  GitHub Actions VPS Ready"
+          echo "=============================="
+          echo "OS: $(lsb_release -d | cut -f2)"
+          echo "CPU: $(nproc) cores"
+          echo "RAM: $(free -h | awk '/^Mem/ {print $2}')"
+          echo "Disk: $(df -h / | awk 'NR==2 {print $4}') free"
+          echo "=============================="
+
+      - name: Install Dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq \
+            openssh-server \
+            curl \
+            wget \
+            git \
+            unzip \
+            htop \
+            tmux \
+            nano \
+            vim \
+            net-tools \
+            build-essential \
+            python3 \
+            python3-pip \
+            nodejs \
+            npm
+
+      - name: Install Tailscale
+        run: |
+          curl -fsSL https://tailscale.com/install.sh | sh
+
+      - name: Start Tailscale
+        run: |
+          sudo tailscaled > /dev/null 2>&1 &
+          sleep 3
+          sudo tailscale up \
+            --authkey=${{ secrets.TS_AUTHKEY }} \
+            --hostname=github-vps \
+            --accept-routes
+
+      - name: Configure SSH
+        run: |
+          sudo mkdir -p /var/run/sshd
+
+          # Set password from secret
+          echo "runner:${{ secrets.SSH_PASSWORD }}" | sudo chpasswd
+
+          # SSH config
+          sudo tee /etc/ssh/sshd_config > /dev/null <<EOF
+          Port 22
+          PermitRootLogin no
+          PasswordAuthentication yes
+          PubkeyAuthentication yes
+          ChallengeResponseAuthentication no
+          UsePAM yes
+          X11Forwarding yes
+          PrintMotd no
+          AcceptEnv LANG LC_*
+          Subsystem sftp /usr/lib/openssh/sftp-server
+          EOF
+
+          sudo service ssh restart
+
+      - name: Get Connection Info
+        run: |
+          TAILSCALE_IP=$(tailscale ip -4)
+          echo "=============================="
+          echo "  SSH CONNECTION INFO"
+          echo "=============================="
+          echo "  ssh runner@${TAILSCALE_IP}"
+          echo "  Password: (from SSH_PASSWORD secret)"
+          echo "=============================="
+          echo "  SFTP: sftp runner@${TAILSCALE_IP}"
+          echo "=============================="
+          echo "Tailscale IP: ${TAILSCALE_IP}"
+
+      - name: Keep Alive
+        run: |
+          echo "VPS running... will stop after ${{ github.event.inputs.tunnel_duration }}s"
+          sleep ${{ github.event.inputs.tunnel_duration }}
